@@ -105,3 +105,28 @@ def test_process_climate_data_confines_output_paths_to_run_dir():
 
     assert image.path.name == "evil.png"
     assert image.path.parent.parent == paths.OUTPUTS_ROOT
+
+
+def test_process_climate_data_reports_data_quality():
+    report, _ = process_climate_data(_valid_config())
+
+    assert "Data quality" in report
+    assert "temperature_c" in report
+    assert "coverage" in report
+    assert "longest_gap" in report
+    assert "policy=interpolate" in report
+
+
+def test_process_climate_data_rejects_bad_missing_policy():
+    config = _valid_config()
+    config["missing_policy"] = {"precipitation_mm": "ignore"}
+    with pytest.raises(ValueError):
+        process_climate_data(config)
+
+
+def test_process_climate_data_accepts_missing_policy_from_config():
+    config = _valid_config()
+    config["missing_policy"] = {"precipitation_mm": "fail"}
+    # mock_climate.csv is complete, so 'fail' must still succeed
+    report, _ = process_climate_data(config)
+    assert "policy=fail" in report

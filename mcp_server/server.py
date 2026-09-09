@@ -31,7 +31,10 @@ mcp = MCPServer(
         "Tools for the mock climate processing pipeline: aggregating daily "
         "temperature/precipitation data to monthly summaries and a plot. "
         "Call get_config_schema first to see the required config shape, and "
-        "list_sample_data to see which input_csv values are available."
+        "list_sample_data to see which input_csv values are available. The "
+        "optional missing_policy block chooses what happens to gaps in the "
+        "data; the result reports coverage and the longest gap per metric, so "
+        "check it before reporting any total as if it were complete."
     ),
 )
 
@@ -93,8 +96,17 @@ def process_climate_data(config: dict[str, Any]) -> list[str | Image]:
     are treated as filenames only -- every run writes to its own directory,
     so a config cannot choose where on disk anything is written.
 
-    Returns a text report (row count, monthly summary table) followed by the
-    rendered plot image.
+    `missing_policy` is optional: omit it and each metric uses the pipeline's
+    default (interpolate for temperature_c, zero_fill for precipitation_mm).
+    Set it per metric to interpolate, zero_fill, drop or fail. The right choice
+    depends on the question being asked, not on the data alone: temperature is
+    averaged over the month, so an estimated day washes out, while precipitation
+    is summed, so a zero-filled day lowers the total permanently.
+
+    Returns a text report (row count, per-metric data quality, monthly summary
+    table) followed by the rendered plot image. The data-quality section gives
+    the missing count, coverage and longest consecutive gap for each metric, so
+    the effect of the chosen policy is visible in the result.
     """
     schema_errors = _schema_errors(config)
     if schema_errors:
@@ -118,9 +130,18 @@ def process_climate_data(config: dict[str, Any]) -> list[str | Image]:
     plot_path = Path(result["plot_path"])
     summary_preview = summary_path.read_text(encoding="utf-8")
 
+    quality = result["data_quality"]
+    quality_lines = "\n".join(
+        f"  {name}: column={info['column']}, aggregation={info['aggregation']}, "
+        f"policy={info['policy']}, missing={info['missing']}, "
+        f"coverage={info['coverage']:.1%}, longest_gap={info['longest_gap']}"
+        for name, info in quality["metrics"].items()
+    )
+
     report = (
         f"Processed {result['rows_processed']} rows from "
         f"{Path(config['input_csv']).name} (run {run_dir.name}).\n\n"
+        f"Data quality ({quality['rows_read']} rows read):\n{quality_lines}\n\n"
         f"Monthly summary ({summary_path.name}):\n{summary_preview}"
     )
 
