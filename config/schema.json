@@ -35,6 +35,14 @@
       "properties": {
         "output_path": { "type": "string", "minLength": 1 }
       }
+    },
+    "missing_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "temperature_c": { "enum": ["interpolate", "zero_fill", "drop", "fail"] },
+        "precipitation_mm": { "enum": ["interpolate", "zero_fill", "drop", "fail"] }
+      }
     }
   }
 }

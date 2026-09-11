@@ -40,6 +40,12 @@ The script does the following in the given order:
 5. Aggregates the daily data to monthly and saves to `outputs/`: `build_monthly_summary()`
 6. Creates and exports a plot of the data: `create_plot()`
 
+## Missing data policy:
+
+- The config takes an optional top-level missing_policy block.
+- The four values and what each does: interpolate / zero_fill / drop / fail.
+- Defaults: interpolate for temperature_c, zero_fill for precipitation_mm
+
 ## Installing and executing the script
 
 The necessary dependencies can be installed into a Python environment using `pip` or `uv`:
@@ -76,7 +82,7 @@ This provides the following tools to the agent:
 - `get_config_schema` — the JSON Schema a config must satisfy (also exposed as the resource `climate://config-schema`)
 - `list_sample_data` — CSV files available under `data/`, with their column names
 - `validate_climate_config` — validate a config without running the pipeline
-- `process_climate_data` — run the pipeline on an inline config; returns a text report (row count, monthly summary table) plus the rendered plot image
+- `process_climate_data` — run the pipeline on an inline config; returns a text report (row count, monthly summary table, data_quality, policy and aggregation) plus the rendered plot image
 
 ### New user workflow
 
@@ -191,6 +197,24 @@ args = []
 ### Testing
 
 `tests/test_mcp_server.py` calls the tool functions directly (they stay plain, callable Python functions under the `@mcp.tool()` decorator) and covers the sandboxing rules above, including path-traversal attempts in `input_csv` and `output_path`. Run it with the rest of the suite via `python -m pytest`.
+
+## Skill
+
+`.claude/skills/climate-missing-data/SKILL.md` supplies the judgment the MCP deliberately does not encode — which missing_policy to choose, and what the result means once it comes back.
+
+- at startup the harness reads only the name and description
+- when a request matches the description, the whole SKILL.md is loaded
+- referenced files load later still, only if the workflow reaches them
+
+### Workflow with the skill
+
+1. User states intent, saying nothing about data quality: "Process missing_climate2.csv and give me the monthly rainfall total."
+2. The description matches; the harness loads the full SKILL.md.
+3. Before the call: the skill's rules decide missing_policy: drop rather than the default zero_fill, and that goes into the tool-call arguments.
+4. The call: identical to the MCP workflow already documented — JSON-RPC, schema validation, fresh run directory, run_pipeline(), result returned with data_quality.
+5. After the call: the skill's rules turn coverage: 92.9% into "a lower bound, not a measurement", and decide to ask whether the figure is exploratory or headed for a report.
+
+The skill wraps the tool call on both sides; it changes the arguments going in and the claim coming out, and changes nothing in between.
 
 ## Security
 

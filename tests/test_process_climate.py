@@ -128,3 +128,233 @@ def test_run_from_config_path_matches_repo_example():
     assert Path(result["summary_path"]).exists()
     assert Path(result["plot_path"]).exists()
     assert result["rows_processed"] > 0
+
+
+def test_apply_missing_policy_interpolate():
+    series = pd.Series([1.0, None, 3.0])
+    result = pc.apply_missing_policy(series, "interpolate", label="temperature_c")
+    assert result.isna().sum() == 0
+    assert result.iloc[1] == pytest.approx(2.0)
+
+
+def test_apply_missing_policy_zero_fill():
+    series = pd.Series([1.0, None, 3.0])
+    result = pc.apply_missing_policy(series, "zero_fill", label="precipitation_mm")
+    assert result.iloc[1] == pytest.approx(0.0)
+
+
+def test_apply_missing_policy_drop_leaves_nan_for_skipna():
+    series = pd.Series([1.0, None, 3.0])
+    result = pc.apply_missing_policy(series, "drop", label="precipitation_mm")
+    assert result.isna().sum() == 1
+    assert result.sum() == pytest.approx(4.0)
+
+
+def test_apply_missing_policy_fail_raises_with_count():
+    series = pd.Series([1.0, None, None])
+    with pytest.raises(ValueError, match="2 missing"):
+        pc.apply_missing_policy(series, "fail", label="precipitation_mm")
+
+
+def test_apply_missing_policy_fail_passes_on_complete_series():
+    series = pd.Series([1.0, 2.0])
+    result = pc.apply_missing_policy(series, "fail", label="temperature_c")
+    assert list(result) == [1.0, 2.0]
+
+
+def test_apply_missing_policy_rejects_unknown_policy():
+    with pytest.raises(ValueError, match="unknown missing_policy"):
+        pc.apply_missing_policy(pd.Series([1.0]), "guess", label="temperature_c")
+
+
+def _specs(temp_policy="interpolate", precip_policy="drop"):
+    return {
+        "temperature_c": {
+            "column": "temp",
+            "aggregation": "mean",
+            "missing_policy": temp_policy,
+        },
+        "precipitation_mm": {
+            "column": "precip",
+            "aggregation": "sum",
+            "missing_policy": precip_policy,
+        },
+    }
+
+
+def test_assess_data_quality_counts_missing_and_coverage():
+    frame = pd.DataFrame({"temp": [1.0, None, 3.0, 4.0], "precip": [0.0, 1.0, None, None]})
+
+    quality = pc.assess_data_quality(frame, _specs())
+
+    assert quality["rows_read"] == 4
+    assert quality["metrics"]["temperature_c"]["missing"] == 1
+    assert quality["metrics"]["temperature_c"]["coverage"] == pytest.approx(0.75)
+    assert quality["metrics"]["precipitation_mm"]["missing"] == 2
+    assert quality["metrics"]["precipitation_mm"]["coverage"] == pytest.approx(0.5)
+
+
+def test_assess_data_quality_echoes_policy_and_aggregation():
+    frame = pd.DataFrame({"temp": [1.0], "precip": [2.0]})
+
+    quality = pc.assess_data_quality(frame, _specs(precip_policy="fail"))
+
+    assert quality["metrics"]["precipitation_mm"]["policy"] == "fail"
+    assert quality["metrics"]["precipitation_mm"]["aggregation"] == "sum"
+    assert quality["metrics"]["temperature_c"]["column"] == "temp"
+
+
+def test_assess_data_quality_treats_non_numeric_as_missing():
+    frame = pd.DataFrame({"temp": ["1.0", "n/a"], "precip": [0.0, 1.0]})
+
+    quality = pc.assess_data_quality(frame, _specs())
+
+    assert quality["metrics"]["temperature_c"]["missing"] == 1
+
+
+def test_assess_data_quality_reports_longest_gap():
+    frame = pd.DataFrame(
+        {
+            "temp": [1.0, None, None, None, 5.0, None, 7.0],
+            "precip": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        }
+    )
+
+    quality = pc.assess_data_quality(frame, _specs())
+
+    assert quality["metrics"]["temperature_c"]["missing"] == 4
+    assert quality["metrics"]["temperature_c"]["longest_gap"] == 3
+    assert quality["metrics"]["precipitation_mm"]["longest_gap"] == 0
+
+
+def test_longest_gap_distinguishes_scattered_from_consecutive():
+    """Same missing count and coverage, different longest_gap - the reason the
+    field exists."""
+    scattered = pd.DataFrame({"temp": [None, 1.0, None, 2.0, None, 3.0], "precip": [0.0] * 6})
+    consecutive = pd.DataFrame({"temp": [None, None, None, 1.0, 2.0, 3.0], "precip": [0.0] * 6})
+
+    a = pc.assess_data_quality(scattered, _specs())["metrics"]["temperature_c"]
+    b = pc.assess_data_quality(consecutive, _specs())["metrics"]["temperature_c"]
+
+    assert a["missing"] == b["missing"] == 3
+    assert a["coverage"] == b["coverage"]
+    assert a["longest_gap"] == 1
+    assert b["longest_gap"] == 3
+
+
+def test_assess_data_quality_gap_runs_to_end_of_series():
+    frame = pd.DataFrame({"temp": [1.0, None, None], "precip": [0.0, 1.0, 2.0]})
+
+    quality = pc.assess_data_quality(frame, _specs())
+
+    assert quality["metrics"]["temperature_c"]["longest_gap"] == 2
+
+
+def test_prepare_data_defaults_reproduce_current_behaviour():
+    """No policy arguments -> exactly what the pipeline did before."""
+    frame = pd.DataFrame(
+        {
+            "date": ["2026-01-01", "2026-01-02", "2026-01-03"],
+            "temp": [1.0, None, 3.0],
+            "precip": [2.0, None, 1.0],
+        }
+    )
+
+    processed = pc.prepare_data(frame, "date", "temp", "precip", rolling_window_days=2)
+
+    assert processed["temp"].isna().sum() == 0
+    assert processed.loc[pd.Timestamp("2026-01-02"), "temp"] == pytest.approx(2.0)
+    assert processed.loc[pd.Timestamp("2026-01-02"), "precip"] == pytest.approx(0.0)
+
+
+def test_prepare_data_honours_explicit_policies():
+    frame = pd.DataFrame(
+        {
+            "date": ["2026-01-01", "2026-01-02", "2026-01-03"],
+            "temp": [1.0, None, 3.0],
+            "precip": [2.0, None, 1.0],
+        }
+    )
+
+    processed = pc.prepare_data(
+        frame, "date", "temp", "precip", rolling_window_days=2, precip_policy="drop"
+    )
+
+    assert processed["precip"].isna().sum() == 1
+
+
+def test_prepare_data_fail_policy_raises():
+    frame = pd.DataFrame(
+        {"date": ["2026-01-01", "2026-01-02"], "temp": [1.0, 2.0], "precip": [0.0, None]}
+    )
+
+    with pytest.raises(ValueError, match="precipitation_mm"):
+        pc.prepare_data(
+            frame, "date", "temp", "precip", rolling_window_days=2, precip_policy="fail"
+        )
+
+
+def _write_gappy_csv(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(exist_ok=True)
+    csv_path = data_dir / "gappy.csv"
+    csv_path.write_text(
+        "date,temperature_c,precipitation_mm\n"
+        "2026-01-01,1.0,4.0\n"
+        "2026-01-02,2.0,\n"
+        "2026-01-03,3.0,\n"
+        "2026-01-04,4.0,6.0\n"
+    )
+    return csv_path
+
+
+def test_run_pipeline_returns_data_quality(tmp_path):
+    _write_gappy_csv(tmp_path)
+    config = _valid_config_dict(
+        input_csv="data/gappy.csv",
+        plot_path="outputs/plot.png",
+        summary_path="outputs/summary.csv",
+    )
+
+    result = pc.run_pipeline(config, tmp_path)
+
+    quality = result["data_quality"]
+    assert quality["rows_read"] == 4
+    precip = quality["metrics"]["precipitation_mm"]
+    assert precip["missing"] == 2
+    assert precip["longest_gap"] == 2
+    assert precip["coverage"] == pytest.approx(0.5)
+    assert precip["aggregation"] == "sum"
+    assert precip["policy"] == "zero_fill"  # the default
+
+
+def test_run_pipeline_applies_missing_policy_from_config(tmp_path):
+    _write_gappy_csv(tmp_path)
+    config = _valid_config_dict(
+        input_csv="data/gappy.csv",
+        plot_path="outputs/plot.png",
+        summary_path="outputs/summary.csv",
+    )
+    config["missing_policy"] = {"precipitation_mm": "fail"}
+
+    with pytest.raises(ValueError, match="precipitation_mm"):
+        pc.run_pipeline(config, tmp_path)
+
+
+def test_run_pipeline_zero_fill_and_drop_give_the_same_total(tmp_path):
+    """The teaching case: identical number, different coverage."""
+    _write_gappy_csv(tmp_path)
+
+    totals = {}
+    for policy in ("zero_fill", "drop"):
+        config = _valid_config_dict(
+            input_csv="data/gappy.csv",
+            plot_path=f"outputs/plot_{policy}.png",
+            summary_path=f"outputs/summary_{policy}.csv",
+        )
+        config["missing_policy"] = {"precipitation_mm": policy}
+        result = pc.run_pipeline(config, tmp_path)
+        summary = pd.read_csv(result["summary_path"])
+        totals[policy] = summary.loc[0, "total_precipitation_mm"]
+
+    assert totals["zero_fill"] == pytest.approx(totals["drop"]) == pytest.approx(10.0)

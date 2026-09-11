@@ -67,3 +67,35 @@ def test_invalid_configs_fail(schema, valid_config, mutate):
     mutate(valid_config)
     with pytest.raises(ValidationError):
         validate(instance=valid_config, schema=schema)
+
+
+def test_config_without_missing_policy_is_valid(schema, valid_config):
+    """The field is optional - existing configs must keep working."""
+    assert "missing_policy" not in valid_config
+    validate(instance=valid_config, schema=schema)
+
+
+def test_config_with_missing_policy_is_valid(schema, valid_config):
+    valid_config["missing_policy"] = {"precipitation_mm": "drop"}
+    validate(instance=valid_config, schema=schema)
+
+
+def test_config_with_both_metrics_specified_is_valid(schema, valid_config):
+    valid_config["missing_policy"] = {"temperature_c": "fail", "precipitation_mm": "fail"}
+    validate(instance=valid_config, schema=schema)
+
+
+@pytest.mark.parametrize(
+    "policy_block",
+    [
+        {"precipitation_mm": "ignore"},
+        {"temperature_c": "median"},
+        {"humidity_pct": "drop"},
+        {"precipitation_mm": 3},
+    ],
+    ids=["unknown-policy", "another-unknown-policy", "unknown-metric", "wrong-type"],
+)
+def test_invalid_missing_policy_blocks_fail(schema, valid_config, policy_block):
+    valid_config["missing_policy"] = policy_block
+    with pytest.raises(ValidationError):
+        validate(instance=valid_config, schema=schema)
